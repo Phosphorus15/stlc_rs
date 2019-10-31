@@ -62,11 +62,11 @@ fn eval_infer(term: InferTerm, env: BoundVar) -> Value {
             env[env.len() - v - 1].clone()
         }
         InferTerm::Ann(t, _) => {
-            eval(t, env.clone())
+            eval(t, env)
         }
         InferTerm::App(t1, t2) => {
             let v1 = eval_infer(*t1, env.clone());
-            let v2 = eval(t2, env.clone());
+            let v2 = eval(t2, env);
             match v1 {
                 Value::Lam(t, mut lenv) => {
                     lenv.push(v2);
@@ -84,9 +84,9 @@ fn eval_infer(term: InferTerm, env: BoundVar) -> Value {
 
 fn eval(term: Term, env: BoundVar) -> Value {
     match term {
-        Term::Inf(infer) => eval_infer(*infer, env.clone()),
+        Term::Inf(infer) => eval_infer(*infer, env),
         Term::Lam(body) => {
-            Value::Lam(*body, env.clone())
+            Value::Lam(*body, env)
         }
     }
 }
