@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use crate::Name::Local;
 
+/// We implement this using a mixing of Named Variables (Whatever its type) and De brujin Indices
 #[derive(Clone, Eq, PartialEq, Debug, Hash)]
 enum Name {
     Global(String),
@@ -185,6 +186,28 @@ fn subst(s: InferTerm, t: Term, index: usize) -> Term {
     }
 }
 
+fn quote_neutral(neutral: Neutral, index: usize) -> InferTerm {
+    match neutral {
+        Neutral::Free(name) => InferTerm::Free(name),
+        Neutral::App(l, r) => InferTerm::App(
+            Box::new(quote_neutral(*l, index)), quote(*r, index),
+        )
+    }
+}
+
+fn quote(val: Value, index: usize) -> Term {
+    match val {
+        Value::Neutral(neutral) => {
+            Term::Inf(Box::new(quote_neutral(neutral, index)))
+        }
+        Value::Lam(t, mut env) => {
+            env.push(Value::Neutral(Neutral::Free(Name::Quote(index))));
+            let v = eval(t, env);
+            Term::Lam(Box::new(quote(v, index + 1)))
+        }
+    }
+}
+
 fn main() {
     let mut context = HashMap::new();
     context.insert(Name::Global("a".to_string()), ContextInfo::Kind);
@@ -220,8 +243,10 @@ fn main() {
         ),
         id.clone(),
     );
-    println!("{:?}", eval_infer(expr.clone(), vec![]));
-    println!("{:?}", type_infer(expr, context.clone(), 0));
+    let value = eval_infer(expr.clone(), vec![]);
+    println!("Evaluate Result: {:?}", value);
+    println!("Quote: {:?}", quote(value, 0));
+    println!("Inferred Type: {:?}", type_infer(expr, context.clone(), 0));
 }
 
 #[test]
