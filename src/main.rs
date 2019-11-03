@@ -41,12 +41,6 @@ enum Neutral {
     App(Box<Self>, Box<Value>),
 }
 
-#[derive(Clone, Eq, PartialEq, Debug)]
-enum ContextInfo {
-    Kind,
-    Type(Type),
-}
-
 type Type = Value;
 
 type BoundVar = Vec<Value>;
@@ -142,7 +136,7 @@ fn type_check(term: Term, ty: Type, mut context: TypeContext, index: usize) -> R
     match term {
         Term::Inf(inf) => {
             match type_infer(*inf, context, index) {
-                Ok(tyi) => if tyi == ty {
+                Ok(tyi) => if quote(tyi, 0) == quote(ty, 0) {
                     Ok(())
                 } else {
                     Err("Mismatched types".to_string())
@@ -226,16 +220,10 @@ fn quote(val: Value, index: usize) -> Term {
     }
 }
 
-fn main() {
-
-}
+fn main() {}
 
 #[test]
-fn ty_check_pass() {
-
-}
+fn ty_check_pass() {}
 
 #[test]
-fn ty_check_fail() {
-
-}
+fn ty_check_fail() {}
