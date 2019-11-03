@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use crate::Name::Local;
+use crate::Value::VPi;
+use crate::InferTerm::Free;
 
 /// We implement this using a mixing of Named Variables (Whatever its type) and De brujin Indices
 #[derive(Clone, Eq, PartialEq, Debug, Hash)]
@@ -10,15 +12,10 @@ enum Name {
 }
 
 #[derive(Clone, Eq, PartialEq, Debug)]
-enum Type {
-    Free(Name),
-    Fun(Box<Self>, Box<Self>),
-    Bot,
-}
-
-#[derive(Clone, Eq, PartialEq, Debug)]
 enum InferTerm {
-    Ann(Term, Type),
+    Ann(Term, Term),
+    Set,
+    Pi(Term, Term),
     Free(Name),
     Bound(usize),
     App(Box<Self>, Term),
@@ -34,6 +31,8 @@ enum Term {
 enum Value {
     Lam(Term, BoundVar),
     Neutral(Neutral),
+    VSet,
+    VPi(Box<Self>, Term, BoundVar),
 }
 
 #[derive(Clone, Eq, PartialEq, Debug)]
@@ -48,9 +47,11 @@ enum ContextInfo {
     Type(Type),
 }
 
+type Type = Value;
+
 type BoundVar = Vec<Value>;
 
-type TypeContext = HashMap<Name, ContextInfo>;
+type TypeContext = HashMap<Name, Type>;
 
 fn eval_infer(term: InferTerm, env: BoundVar) -> Value {
     match term {
@@ -77,8 +78,11 @@ fn eval_infer(term: InferTerm, env: BoundVar) -> Value {
                         Neutral::App(Box::new(neutral), Box::new(v2))
                     )
                 }
+                _ => unreachable!("Illegal application")
             }
         }
+        InferTerm::Set => Value::VSet,
+        InferTerm::Pi(x, t) => VPi(Box::new(eval(x, env.clone())), t, env)
     }
 }
 
@@ -91,38 +95,42 @@ fn eval(term: Term, env: BoundVar) -> Value {
     }
 }
 
-fn valid_ty(ty: &Type, context: &TypeContext) -> bool {
-    match ty {
-        Type::Fun(l, r) => valid_ty(&*l, context) || valid_ty(&*r, context),
-        Type::Free(name) => context.contains_key(&name),
-        _ => false
-    }
-}
-
-fn type_infer(term: InferTerm, context: TypeContext, index: usize) -> Result<Type, String> {
+fn type_infer(term: InferTerm, mut context: TypeContext, index: usize) -> Result<Type, String> {
     match term {
-        InferTerm::Free(name) => context.get(&name)
-            .iter().filter_map(|v| {
-            match v {
-                ContextInfo::Type(ty) => Some(ty),
-                _ => None
-            }
-        }).last().cloned().ok_or(format!("Type mismatched for {:?}", name)),
+        InferTerm::Free(name) => context.get(&name).cloned().ok_or(format!("Type mismatched for {:?}", name)),
         InferTerm::Bound(_) => {
             Err("Unbound lambda vars".to_string())
         }
         InferTerm::App(t1, t2) => {
             match type_infer(*t1, context.clone(), index) {
-                Ok(Type::Fun(ty1, ty2)) => {
-                    type_check(t2, *ty1, context, index).map(|_| *ty2)
+                Ok(Type::VPi(ty1, ty2, mut ctx)) => {
+                    if type_check(t2.clone(), *ty1, context, index).is_ok() {
+                        ctx.push(eval(t2, vec![]));
+                        Ok(eval(ty2, ctx))
+                    } else {
+                        Err(format!("Illegal application param : {:?}", t2))
+                    }
                 }
                 Ok(ty) => Err(format!("Illegal application to type: {:?}", ty)),
                 Err(msg) => Err(format!("Illegal application: {:?}", msg)),
             }
         }
+        InferTerm::Set => Ok(Type::VSet),
+        InferTerm::Pi(l, r) => {
+            if type_check(l.clone(), Type::VSet, context.clone(), index).is_ok() {
+                let ty = eval(l, vec![]);
+                context.insert(Local(index), ty);
+                if type_check(subst(Free(Local(index)), r, 0), Type::VSet, context, index + 1).is_ok() {
+                    return Ok(Type::VSet);
+                }
+            }
+            Err("Unexpected pi values".to_string())
+        }
         InferTerm::Ann(t, ty) => {
-            if valid_ty(&ty, &context) {
-                type_check(t, ty.clone(), context, index).map(|_| ty)
+            if type_check(ty.clone(), Type::VSet, context.clone(), index).is_ok() {
+                let ev_ty = eval(ty, vec![]);
+                type_check(t, ev_ty.clone(), context, index);
+                Ok(ev_ty)
             } else {
                 Err(format!("Invalid type annotation: {:?}", ty))
             }
@@ -144,10 +152,11 @@ fn type_check(term: Term, ty: Type, mut context: TypeContext, index: usize) -> R
         }
         Term::Lam(body) => {
             match ty {
-                Type::Fun(l, r) => {
+                Type::VPi(l, r, mut ctx) => {
                     let typ = subst(InferTerm::Free(Name::Local(index)), *body, index);
-                    context.insert(Local(index), ContextInfo::Type(*l));
-                    type_check(typ, *r, context, index + 1)
+                    context.insert(Local(index), *l);
+                    ctx.push(Value::Neutral(Neutral::Free(Local(index))));
+                    type_check(typ, eval(r, ctx), context, index + 1)
                 }
                 _ => Err("Incorrect type prediction for lambda abstraction".to_string())
             }
@@ -166,6 +175,9 @@ fn subst_infer(s: InferTerm, t: InferTerm, index: usize) -> InferTerm {
         InferTerm::Ann(t, ty) => InferTerm::Ann(subst(s, t, index), ty),
         InferTerm::App(l, r) => InferTerm::App(
             Box::new(subst_infer(s.clone(), *l, index)), subst(s, r, index),
+        ),
+        InferTerm::Pi(l, r) => InferTerm::Pi(
+            subst(s.clone(), l, index), subst(s, r, index + 1),
         ),
         _ => t
     }
@@ -205,129 +217,25 @@ fn quote(val: Value, index: usize) -> Term {
             let v = eval(t, env);
             Term::Lam(Box::new(quote(v, index + 1)))
         }
+        Value::VSet => Term::Inf(Box::new(InferTerm::Set)),
+        Value::VPi(l, r, mut env) => {
+            env.push(Value::Neutral(Neutral::Free(Name::Quote(index))));
+            let v = eval(r, env);
+            Term::Inf(Box::new(InferTerm::Pi(quote(*l, index), quote(v, index + 1))))
+        }
     }
 }
 
 fn main() {
-    let mut context = HashMap::new();
-    context.insert(Name::Global("a".to_string()), ContextInfo::Kind);
-    let id = Term::Lam(
-        Box::new(
-            Term::Inf(
-                Box::new(
-                    InferTerm::Bound(0)
-                )
-            )
-        )
-    );
-    let id_sign = Box::new(
-        Type::Fun(
-            Box::new(
-                Type::Free(Name::Global("a".to_string()))
-            ),
-            Box::new(
-                Type::Free(Name::Global("a".to_string()))
-            ),
-        )
-    );
-    let type_sign = Type::Fun(
-        id_sign.clone(),
-        id_sign,
-    );
-    let expr = InferTerm::App(
-        Box::new(
-            InferTerm::Ann(
-                id.clone(),
-                type_sign.clone(), // totally untyped
-            )
-        ),
-        id.clone(),
-    );
-    let value = eval_infer(expr.clone(), vec![]);
-    println!("Evaluate Result: {:?}", value);
-    println!("Quote: {:?}", quote(value, 0));
-    println!("Inferred Type: {:?}", type_infer(expr, context.clone(), 0));
+
 }
 
 #[test]
 fn ty_check_pass() {
-    let mut context = HashMap::new();
-    context.insert(Name::Global("a".to_string()), ContextInfo::Kind);
-    let id = Term::Lam(
-        Box::new(
-            Term::Inf(
-                Box::new(
-                    InferTerm::Bound(0)
-                )
-            )
-        )
-    );
-    let id_sign = Box::new(
-        Type::Fun(
-            Box::new(
-                Type::Free(Name::Global("a".to_string()))
-            ),
-            Box::new(
-                Type::Free(Name::Global("a".to_string()))
-            ),
-        )
-    );
-    let type_sign = Type::Fun(
-        id_sign.clone(),
-        id_sign,
-    );
-    let expr = InferTerm::App(
-        Box::new(
-            InferTerm::Ann(
-                id.clone(),
-                type_sign.clone(), // totally untyped
-            )
-        ),
-        id.clone(),
-    );
-    assert!(type_infer(expr, context.clone(), 0).is_ok());
+
 }
 
 #[test]
 fn ty_check_fail() {
-    let mut context = HashMap::new();
-    context.insert(Name::Global("a".to_string()), ContextInfo::Kind);
-    let id = Term::Lam(
-        Box::new(
-            Term::Inf(
-                Box::new(
-                    InferTerm::Bound(0)
-                )
-            )
-        )
-    );
-    let constv = Term::Lam(
-        Box::new(
-            Term::Lam(
-                Box::new(
-                    Term::Inf(
-                        Box::new(
-                            InferTerm::Bound(1)
-                        )
-                    )
-                )
-            )
-        )
-    );
-    let expr = InferTerm::App(
-        Box::new(
-            InferTerm::Ann(
-                id.clone(),
-                Type::Bot, // totally untyped
-            )
-        ),
-        id.clone(),
-    );
-    let expr2 = InferTerm::App(
-        Box::new(
-            expr.clone()
-        ),
-        constv.clone(),
-    );
-    assert!(type_infer(expr2, context.clone(), 0).is_err());
+
 }
